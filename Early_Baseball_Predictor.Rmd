@@ -1,0 +1,116 @@
+---
+title: "Attempting to Predict OPS Using Early-Season Metrics"
+author: "Nolan Bunn"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(readr)
+library(GGally)
+library(tidyverse)
+library(knitr)
+library(ggfortify)
+library(emmeans)
+library(StepReg)
+library(car) 
+```
+
+Introduction:
+Using data found on Baseball Savant, I found the average launch speed (or exit velocity), average launch angle, hard hit rate, and barrel percentage (per PA). I am attempting to use these early-season underlying metrics to predict a player's end of season OPS. As a qualifier, the batter needed at least 40 plate appearances by April 30th. All data is from the 2025 season. 
+
+```{r}
+April_data <- read_csv("Early_2025_batted_ball_v3.csv",
+                      show_col_types=FALSE)
+
+clean_april_data <- April_data %>%
+  select(player_name, launch_speed, launch_angle, hardhit_percent, barrels_per_pa_percent)
+```
+
+```{r}
+bref_data <- read_csv("2025_bref_stats_v3.csv",
+                      show_col_types = FALSE)
+
+clean_bref_data <- bref_data %>%
+  select(Last_First, PA, OPS)
+```
+
+```{r}
+final_data <- clean_april_data %>%
+  left_join(clean_bref_data, by = c("player_name" = "Last_First"))
+```
+
+```{r}
+summary(final_data)
+```
+
+I have collected the exit velocities, launch angles, hard-hit rate, and barrel percentage (per PA) from all players who had at least 40 plate appearances from Opening Day to the end of April. That was a total of 269 batters. I found their end of season OPS, and now I can attempt to figure out to best use these early season metrics to predict seasonal offensive production.
+
+```{r}
+ggpairs(final_data, columns= c(2,3,4,5,7))
+```
+
+I'm looking at the bottom row to assess how these variables may affect OPS> Nothing particularly stands out, no variable shows very strong correlation. Launch angle and OPS show a very weak sense of correlation in this graph.
+
+```{r}
+OPS_predictor_fit <- lm(OPS ~ launch_speed + launch_angle + hardhit_percent + barrels_per_pa_percent,
+                  data=final_data)
+
+autoplot(OPS_predictor_fit, which=c(1,2,3,5,4,6))
+```
+
+The data looks good. The dots perfectly follow the 45-degree blue line on the Q-Q plot, which means the data is normal. The Scale vs Location and Residuals vs Fitted both show equal variance, that the data is random. Observation 114 appears to be a problem and has too much influence, I will identify the player before choosing how to proceed.
+
+```{r}
+final_data [114, ]
+```
+
+Observation 114 was Aaron Judge, the AL MVP. I thought that Observation 114 may be a player who got injured early in the season, and had a lack of plate appearances. It was not, it was a player who's April was so good; he was breaking the mold on every graph. His leverage is not particulary high (in the top right of the Cook's distance vs Leverage ) model, so I feel comfortable proceeding.
+
+```{r}
+summary(OPS_predictor_fit)
+```
+
+With a P-value of nearly 0, some combination of these predictors significantly predicts OPS. However, the model only predicts around 22.95% of the variablity and is often off by .08539 in either direction. Overall, this is a solid model, but I can attempt to find better ones.
+
+```{r}
+best_subset <- stepwise(OPS ~ launch_speed + launch_angle + hardhit_percent + barrels_per_pa_percent,
+                  data=final_data,
+         strategy = "subset",
+         best_n = 3,
+         metric = "BIC" )
+
+plot(best_subset)
+
+best_subset$overview$subset$BIC |>
+  arrange(BIC) |>
+  kable()
+```
+
+By BIC, the full model is just the 5th best model that can be used to predict full-season OPS. The best possible model only has launch speed (or exit velocity) and barrel percentage (per pa). This model should more accurately and precisely predict OPS.
+
+```{r}
+OPS_subsets_fit <- lm(OPS ~ launch_speed + barrels_per_pa_percent,
+                  data=final_data)
+summary(OPS_subsets_fit)
+```
+
+This model also is significant, as the p-value is nearly 0. The benefits of this smaller model are marginal, but still apparent. It can predict 23.13% of the variablity and is off by .08529 OPS points on average. The less predictors allow for less noise and can a make this model more accurate.
+
+To give an example of this model, I will choose a random number (139). I can test how accurate the model is based off of his statistics.
+
+```{r}
+final_data [139, ]
+predict(OPS_subsets_fit, newdata=data.frame(launch_speed=87.7, barrels_per_pa_percent=4.2 ), interval="pred")
+predict(OPS_predictor_fit, newdata=data.frame(launch_speed=87.7, barrels_per_pa_percent=4.2, launch_angle=11.5, hardhit_percent=37.5), interval="pred")
+```
+
+The random chosen player was Angel Martinez, the young outfielder form Cleveland. The simpler, better model predicted a .676 OPS. The larger, full model predicted a .679 OPS. He ended up with a .628, so neither model is perfect. However, Martinez hit a very respectable .778 OPS in April, but the models both analyzed that the underlying numbers were not as strong. They did not anticipate how steep the drop off would be, but they did predict a drop-off from his great April.
+
+
+Conclusion:
+In April, end-of-season OPS can be predicted moderately well by using exit velocity, launch angle, hard hit percentage, and barrel percentage. Model accuracy is improved slightly by exclusively using exit velocity and barrel percentage. Neither model can pinpoint exactly how a player's season will go, but it can detect if a player's failures and successes are sustainable throughout the next 100+ games.
+
+
